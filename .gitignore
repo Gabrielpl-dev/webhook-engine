@@ -1,4 +1,11 @@
 node_modules/
 dist/
 __pycache__/
+*.py[cod]
+.venv/
 .env
+data/
+*.db
+*.db-wal
+*.db-shm
+.ruff_cache/
