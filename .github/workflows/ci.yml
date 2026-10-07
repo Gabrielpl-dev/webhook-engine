@@ -13,7 +13,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install ruff
-        run: pip install ruff
+        run: pip install "ruff==0.15.22"  # versão fixa: ruff mais novo também formata blocos de código do README
       - name: Lint
         run: ruff check .
       - name: Format check
