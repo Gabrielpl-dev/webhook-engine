@@ -1,0 +1,22 @@
+[project]
+name = "webhook-engine"
+version = "0.1.0"
+description = "Single-process, SQLite-backed HTTP webhook delivery engine with retries and replay."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Gabrielpl-dev" }]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = [".git", ".venv", "data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]
+
