@@ -321,9 +321,21 @@ class Database:
             (status, http_status, last_error, next_retry_at, util.now_ms(), delivery_id),
         )
 
-    def recover_delivering(self) -> int:
+    def recover_delivering(self, max_attempts: int) -> int:
         now = util.now_ms()
         with self._lock:
+            # An interrupted final attempt has no retries left: mark it failed
+            # instead of retrying, otherwise it would block its endpoint's
+            # queue forever (selection requires attempts < max_attempts).
+            cur = self._conn.execute(
+                """
+                UPDATE deliveries
+                SET status='failed', next_retry_at=NULL, updated_at=?
+                WHERE status='delivering' AND attempts >= ?
+                """,
+                (now, max_attempts),
+            )
+            recovered = cur.rowcount
             cur = self._conn.execute(
                 """
                 UPDATE deliveries
@@ -332,8 +344,9 @@ class Database:
                 """,
                 (now, now),
             )
+            recovered += cur.rowcount
             self._conn.commit()
-            return cur.rowcount
+            return recovered
 
     def pending_deliveries_with_endpoint(self) -> list[sqlite3.Row]:
         return self.query(

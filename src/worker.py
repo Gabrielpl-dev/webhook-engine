@@ -34,7 +34,7 @@ class Worker:
 
     def recover(self) -> None:
         """Transition in-flight deliveries and re-apply the loopback guard."""
-        recovered = self._db.recover_delivering()
+        recovered = self._db.recover_delivering(self._config.max_attempts)
         blocked = self._sweep_ssrf()
         util.log("worker.recover", recovered=recovered, ssrf_blocked=blocked)
 
@@ -124,7 +124,7 @@ class Worker:
             "X-Webhook-Signature": delivery_mod.sign(endpoint["secret"], timestamp, body),
         }
         http_status, last_error = delivery_mod.attempt(
-            endpoint["url"], body, headers, self._config.timeout_ms
+            endpoint["url"], body, headers, self._config.timeout_ms, self._config.allow_localhost
         )
         self._finalize(delivery_id, attempt_no, http_status, last_error)
 

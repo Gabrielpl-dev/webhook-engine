@@ -39,6 +39,21 @@ def validate_url(url: object) -> str:
     return url
 
 
+def is_loopback_address(addr: str) -> bool:
+    """Return True when ``addr`` (a numeric IP) is a loopback address.
+
+    IPv4-mapped IPv6 addresses such as ``::ffff:127.0.0.1`` are unwrapped to
+    their IPv4 form before the check, so mapped loopback cannot slip past.
+    """
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_loopback
+
+
 def host_is_loopback(host: str) -> bool:
     """Return True when ``host`` resolves to at least one loopback address."""
     if not host:
@@ -47,14 +62,7 @@ def host_is_loopback(host: str) -> bool:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror:
         return False
-    for info in infos:
-        addr = info[4][0]
-        try:
-            if ipaddress.ip_address(addr).is_loopback:
-                return True
-        except ValueError:
-            continue
-    return False
+    return any(is_loopback_address(info[4][0]) for info in infos)
 
 
 def url_is_loopback(url: str) -> bool:
@@ -88,12 +96,23 @@ def sign(secret: str, timestamp: str, body: bytes) -> str:
     return "sha256=" + digest
 
 
-def attempt(url: str, body: bytes, headers: dict, timeout_ms: int) -> tuple[int | None, str | None]:
+def attempt(
+    url: str,
+    body: bytes,
+    headers: dict,
+    timeout_ms: int,
+    allow_localhost: bool = False,
+) -> tuple[int | None, str | None]:
     """Perform one delivery attempt.
 
     Returns ``(last_http_status, last_error)``. A successful response yields
     ``(status, None)``; every failure yields either a non-null status with
     ``"non_2xx"`` or a null status with ``"timeout"`` / ``"connection_error"``.
+
+    The hostname is resolved exactly once; the connection is made to the
+    address that was validated here, so a later resolution cannot redirect the
+    request. Loopback addresses (including IPv4-mapped IPv6) are rejected as
+    ``(None, "ssrf_blocked")`` unless ``allow_localhost`` is set.
     """
     parts = urlsplit(url)
     scheme = parts.scheme.lower()
@@ -104,8 +123,26 @@ def attempt(url: str, body: bytes, headers: dict, timeout_ms: int) -> tuple[int 
         path = path + "?" + parts.query
 
     conn_cls = http.client.HTTPSConnection if scheme == "https" else http.client.HTTPConnection
-    conn = conn_cls(host, port, timeout=timeout_ms / 1000.0)
     try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP)
+    except (socket.gaierror, OSError):
+        return None, "connection_error"
+    if not infos:
+        return None, "connection_error"
+    # Reject the whole answer set when any resolved address is loopback, then
+    # connect to the exact address that was validated (no second resolution).
+    if not allow_localhost and any(is_loopback_address(info[4][0]) for info in infos):
+        return None, "ssrf_blocked"
+    family, socktype, proto, _, sockaddr = infos[0]
+    sock = socket.socket(family, socktype, proto)
+    conn: http.client.HTTPConnection | None = None
+    try:
+        sock.settimeout(timeout_ms / 1000.0)
+        sock.connect(sockaddr)
+        if scheme == "https":
+            sock = ssl.create_default_context().wrap_socket(sock, server_hostname=host)
+        conn = conn_cls(host, port)
+        conn.sock = sock
         conn.request("POST", path, body=body, headers=headers)
         response = conn.getresponse()
         status = response.status
@@ -121,10 +158,16 @@ def attempt(url: str, body: bytes, headers: dict, timeout_ms: int) -> tuple[int 
     except (ssl.SSLError, ConnectionError, socket.gaierror, http.client.HTTPException, OSError):
         return None, "connection_error"
     finally:
-        try:
-            conn.close()
-        except Exception:  # noqa: BLE001 - best-effort socket teardown
-            pass
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001 - best-effort socket teardown
+                pass
+        else:
+            try:
+                sock.close()
+            except Exception:  # noqa: BLE001 - best-effort socket teardown
+                pass
 
 
 def unix_seconds() -> str:
